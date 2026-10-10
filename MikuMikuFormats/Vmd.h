@@ -27,8 +27,10 @@ namespace vmd
 		void Read(std::istream* stream)
 		{
 			char buffer[15];
-			stream->read((char*) buffer, sizeof(char)*15);
-			name = std::string(buffer);
+			stream->read(buffer, 15);
+			size_t len = 0;
+			while (len < 15 && buffer[len] != '\0') ++len;
+			name = std::string(buffer, len);
 			stream->read((char*) &frame, sizeof(int));
 			stream->read((char*) position, sizeof(float)*3);
 			stream->read((char*) orientation, sizeof(float)*4);
@@ -37,7 +39,12 @@ namespace vmd
 
 		void Write(std::ostream* stream)
 		{
-			stream->write((char*)name.c_str(), sizeof(char) * 15);
+			char buffer[15] = {0};
+			const size_t copyLen = (name.size() < 15) ? name.size() : 15;
+			if (copyLen > 0) {
+				memcpy(buffer, name.data(), copyLen);
+			}
+			stream->write(buffer, 15);
 			stream->write((char*)&frame, sizeof(int));
 			stream->write((char*)position, sizeof(float) * 3);
 			stream->write((char*)orientation, sizeof(float) * 4);
@@ -59,15 +66,22 @@ namespace vmd
 		void Read(std::istream* stream)
 		{
 			char buffer[15];
-			stream->read((char*) &buffer, sizeof(char) * 15);
-			face_name = std::string(buffer);
+			stream->read(buffer, 15);
+			size_t len = 0;
+			while (len < 15 && buffer[len] != '\0') ++len;
+			face_name = std::string(buffer, len);
 			stream->read((char*) &frame, sizeof(int));
 			stream->read((char*) &weight, sizeof(float));
 		}
 
 		void Write(std::ostream* stream)
 		{
-			stream->write((char*)face_name.c_str(), sizeof(char) * 15);
+			char buffer[15] = {0};
+			const size_t copyLen = (face_name.size() < 15) ? face_name.size() : 15;
+			if (copyLen > 0) {
+				memcpy(buffer, face_name.data(), copyLen);
+			}
+			stream->write(buffer, 15);
 			stream->write((char*)&frame, sizeof(int));
 			stream->write((char*)&weight, sizeof(float));
 		}
@@ -168,7 +182,9 @@ namespace vmd
 			for (int i = 0; i < ik_count; i++)
 			{
 				stream->read(buffer, 20);
-				ik_enable[i].ik_name = std::string(buffer);
+				size_t len = 0;
+				while (len < 20 && buffer[len] != '\0') ++len;
+				ik_enable[i].ik_name = std::string(buffer, len);
 				stream->read((char*) &ik_enable[i].enable, sizeof(uint8_t));
 			}
 		}
@@ -182,7 +198,12 @@ namespace vmd
 			for (int i = 0; i < ik_count; i++)
 			{
 				const VmdIkEnable& ik_enable = this->ik_enable.at(i);
-				stream->write(ik_enable.ik_name.c_str(), 20);
+				char buffer[20] = {0};
+				const size_t copyLen = (ik_enable.ik_name.size() < 20) ? ik_enable.ik_name.size() : 20;
+				if (copyLen > 0) {
+					memcpy(buffer, ik_enable.ik_name.data(), copyLen);
+				}
+				stream->write(buffer, 20);
 				stream->write((char*)&ik_enable.enable, sizeof(uint8_t));
 			}
 		}
@@ -215,7 +236,7 @@ namespace vmd
 			return result;
 		}
 
-		static std::unique_ptr<VmdMotion> LoadFromStream(std::ifstream *stream)
+		static std::unique_ptr<VmdMotion> LoadFromStream(std::istream *stream)
 		{
 
 			char buffer[30];
@@ -232,7 +253,9 @@ namespace vmd
 
 			// name
 			stream->read(buffer, 20);
-			result->model_name = std::string(buffer);
+			size_t len = 0;
+			while (len < 20 && buffer[len] != '\0') ++len;
+			result->model_name = std::string(buffer, len);
 
 			// bone frames
 			int bone_frame_num;
@@ -293,15 +316,25 @@ namespace vmd
 			return result;
 		}
 
-		bool SaveToFile(const std::u16string& filename)
+		bool SaveToFile(const std::string& filename)
 		{
-			std::ofstream stream(filename.c_str(), std::ios::binary);
+			std::ofstream stream(filename, std::ios::binary);
 			auto result = SaveToStream(&stream);
 			stream.close();
 			return result;
 		}
 
-		bool SaveToStream(std::ofstream *stream)
+		bool SaveToFile(const std::u16string& filename)
+		{
+			std::u16string fn = filename;
+			std::wstring wfn(fn.begin(), fn.end());
+			std::ofstream stream(wfn, std::ios::binary);
+			auto result = SaveToStream(&stream);
+			stream.close();
+			return result;
+		}
+
+		bool SaveToStream(std::ostream *stream)
 		{
 			std::string magic = "Vocaloid Motion Data 0002\0";
 			magic.resize(30);
@@ -310,7 +343,12 @@ namespace vmd
 			stream->write(magic.c_str(), 30);
 
 			// name
-			stream->write(model_name.c_str(), 20);
+			char nameBuf[20] = {0};
+			const size_t copyLen = (model_name.size() < 20) ? model_name.size() : 20;
+			if (copyLen > 0) {
+				memcpy(nameBuf, model_name.data(), copyLen);
+			}
+			stream->write(nameBuf, 20);
 
 			// bone frames
 			const int bone_frame_num = static_cast<int>(bone_frames.size());
