@@ -103,8 +103,8 @@ namespace vmd
 		char interpolation[6][4];
 		/// 視野角
 		float angle;
-		/// 不明データ
-		char unknown[3];
+		/// パースペクティブフラグ (0 = on, 1 = off)
+		char unknown[1];
 
 		void Read(std::istream *stream)
 		{
@@ -114,7 +114,7 @@ namespace vmd
 			stream->read((char*) orientation, sizeof(float) * 3);
 			stream->read((char*) interpolation, sizeof(char) * 24);
 			stream->read((char*) &angle, sizeof(float));
-			stream->read((char*) unknown, sizeof(char) * 3);
+			stream->read((char*) unknown, sizeof(char) * 1);
 		}
 
 		void Write(std::ostream *stream)
@@ -125,7 +125,7 @@ namespace vmd
 			stream->write((char*)orientation, sizeof(float) * 3);
 			stream->write((char*)interpolation, sizeof(char) * 24);
 			stream->write((char*)&angle, sizeof(float));
-			stream->write((char*)unknown, sizeof(char) * 3);
+			stream->write((char*)unknown, sizeof(char) * 1);
 		}
 	};
 
