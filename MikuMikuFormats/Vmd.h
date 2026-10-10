@@ -101,8 +101,8 @@ namespace vmd
 		float orientation[3];
 		/// 補間曲線
 		char interpolation[6][4];
-		/// 視野角
-		float angle;
+		/// 視野角 (整数度数, 1~180)
+		int angle;
 		/// パースペクティブフラグ (0 = on, 1 = off)
 		char unknown[1];
 
@@ -113,7 +113,7 @@ namespace vmd
 			stream->read((char*) position, sizeof(float) * 3);
 			stream->read((char*) orientation, sizeof(float) * 3);
 			stream->read((char*) interpolation, sizeof(char) * 24);
-			stream->read((char*) &angle, sizeof(float));
+			stream->read((char*) &angle, sizeof(int));
 			stream->read((char*) unknown, sizeof(char) * 1);
 		}
 
@@ -124,7 +124,7 @@ namespace vmd
 			stream->write((char*)position, sizeof(float) * 3);
 			stream->write((char*)orientation, sizeof(float) * 3);
 			stream->write((char*)interpolation, sizeof(char) * 24);
-			stream->write((char*)&angle, sizeof(float));
+			stream->write((char*)&angle, sizeof(int));
 			stream->write((char*)unknown, sizeof(char) * 1);
 		}
 	};
