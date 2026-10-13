@@ -1,4 +1,6 @@
 #include <utility>
+#include <stdexcept>
+#include <limits>
 #include "Pmx.h"
 #ifndef __unix__
 #include "EncodingHelper.h"
@@ -8,6 +10,31 @@
 
 namespace pmx
 {
+	static void ReadChecked(std::istream* stream, char* data, std::streamsize size)
+	{
+		if (!stream || size < 0 || !stream->read(data, size))
+			throw std::runtime_error("Truncated PMX data");
+	}
+
+	static void ReadCount(std::istream* stream, int& count, size_t minimumBytes = 1)
+	{
+		ReadChecked(stream, reinterpret_cast<char*>(&count), sizeof(count));
+		const auto position = stream->tellg();
+		std::streamoff remaining = -1;
+		if (position != std::istream::pos_type(-1)) {
+			stream->seekg(0, std::ios::end);
+			const auto end = stream->tellg();
+			stream->clear();
+			stream->seekg(position);
+			if (end != std::istream::pos_type(-1)) remaining = end - position;
+		} else {
+			stream->clear();
+			remaining = stream->rdbuf()->in_avail();
+		}
+		if (count < 0 || count > 16000000 ||
+			(remaining >= 0 && static_cast<uint64_t>(count) * minimumBytes > static_cast<uint64_t>(remaining)))
+			throw std::runtime_error("Invalid PMX element count");
+	}
 	/// インデックス値を読み込む
 	int ReadIndex(std::istream *stream, int size)
 	{
@@ -15,7 +42,7 @@ namespace pmx
 		{
 		case 1:
 			uint8_t tmp8;
-			stream->read((char*) &tmp8, sizeof(uint8_t));
+			ReadChecked(stream, (char*) &tmp8, sizeof(uint8_t));
 			if (255 == tmp8)
 			{
 				return -1;
@@ -25,7 +52,7 @@ namespace pmx
 			}
 		case 2:
 			uint16_t tmp16;
-			stream->read((char*) &tmp16, sizeof(uint16_t));
+			ReadChecked(stream, (char*) &tmp16, sizeof(uint16_t));
 			if (65535 == tmp16)
 			{
 				return -1;
@@ -35,7 +62,7 @@ namespace pmx
 			}
 		case 4:
 			int tmp32;
-			stream->read((char*) &tmp32, sizeof(int));
+			ReadChecked(stream, (char*) &tmp32, sizeof(int));
 			return tmp32;
 		default:
 			return -1;
@@ -49,7 +76,7 @@ namespace pmx
 		oguna::EncodingConverter converter = oguna::EncodingConverter();
 #endif
 		int size;
-		stream->read((char*) &size, sizeof(int));
+		ReadCount(stream, size);
 		std::vector<char> buffer;
 		if (size == 0)
 		{
@@ -59,17 +86,18 @@ namespace pmx
 			return utfstring("");
 #endif
 		}
-		buffer.reserve(size);
-		stream->read((char*) buffer.data(), size);
+		buffer.resize(size);
+		ReadChecked(stream, (char*) buffer.data(), size);
 		if (encoding == 0)
 		{
+			if (size % 2) throw std::runtime_error("Odd UTF-16 PMX string length");
 			// UTF16
 #ifndef __unix__
 			return utfstring((wchar_t*) buffer.data(), size / 2);
 #else
 			utfstring result;
 			std::vector<char> outbuf;
-			outbuf.reserve(size*2);
+			outbuf.resize(size*2);
 
 			// Always remember to set U_ZERO_ERROR before calling ucnv_convert(),
 			// otherwise the function will fail.
@@ -78,7 +106,7 @@ namespace pmx
 			if(!U_SUCCESS(err)) {
 				std::cout << "oops, something wrong?" << std::endl;
 				std::cout << u_errorName(err) << std::endl;
-				exit(-1);
+				throw std::runtime_error("Invalid PMX string encoding");
 			}
 
 			result.assign((const char*)outbuf.data(), size);
@@ -101,23 +129,29 @@ namespace pmx
 	void PmxSetting::Read(std::istream *stream)
 	{
 		uint8_t count;
-		stream->read((char*) &count, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &count, sizeof(uint8_t));
 		if (count < 8)
 		{
-			throw;
+			throw std::runtime_error("Invalid or unsupported PMX data");
 		}
-		stream->read((char*) &encoding, sizeof(uint8_t));
-		stream->read((char*) &uv, sizeof(uint8_t));
-		stream->read((char*) &vertex_index_size, sizeof(uint8_t));
-		stream->read((char*) &texture_index_size, sizeof(uint8_t));
-		stream->read((char*) &material_index_size, sizeof(uint8_t));
-		stream->read((char*) &bone_index_size, sizeof(uint8_t));
-		stream->read((char*) &morph_index_size, sizeof(uint8_t));
-		stream->read((char*) &rigidbody_index_size, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &encoding, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &uv, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &vertex_index_size, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &texture_index_size, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &material_index_size, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &bone_index_size, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &morph_index_size, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &rigidbody_index_size, sizeof(uint8_t));
+		auto validIndexSize = [](uint8_t size) { return size == 1 || size == 2 || size == 4; };
+		if (encoding > 1 || uv > 4 || !validIndexSize(vertex_index_size) ||
+			!validIndexSize(texture_index_size) || !validIndexSize(material_index_size) ||
+			!validIndexSize(bone_index_size) || !validIndexSize(morph_index_size) ||
+			!validIndexSize(rigidbody_index_size))
+			throw std::runtime_error("Invalid PMX settings");
 		uint8_t temp;
 		for (int i = 8; i < count; i++)
 		{
-			stream->read((char*)&temp, sizeof(uint8_t));
+			ReadChecked(stream, (char*)&temp, sizeof(uint8_t));
 		}
 	}
 
@@ -130,7 +164,7 @@ namespace pmx
 	{
 		this->bone_index1 = ReadIndex(stream, setting->bone_index_size);
 		this->bone_index2 = ReadIndex(stream, setting->bone_index_size);
-		stream->read((char*) &this->bone_weight, sizeof(float));
+		ReadChecked(stream, (char*) &this->bone_weight, sizeof(float));
 	}
 
 	void PmxVertexSkinningBDEF4::Read(std::istream *stream, PmxSetting *setting)
@@ -139,20 +173,20 @@ namespace pmx
 		this->bone_index2 = ReadIndex(stream, setting->bone_index_size);
 		this->bone_index3 = ReadIndex(stream, setting->bone_index_size);
 		this->bone_index4 = ReadIndex(stream, setting->bone_index_size);
-		stream->read((char*) &this->bone_weight1, sizeof(float));
-		stream->read((char*) &this->bone_weight2, sizeof(float));
-		stream->read((char*) &this->bone_weight3, sizeof(float));
-		stream->read((char*) &this->bone_weight4, sizeof(float));
+		ReadChecked(stream, (char*) &this->bone_weight1, sizeof(float));
+		ReadChecked(stream, (char*) &this->bone_weight2, sizeof(float));
+		ReadChecked(stream, (char*) &this->bone_weight3, sizeof(float));
+		ReadChecked(stream, (char*) &this->bone_weight4, sizeof(float));
 	}
 
 	void PmxVertexSkinningSDEF::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->bone_index1 = ReadIndex(stream, setting->bone_index_size);
 		this->bone_index2 = ReadIndex(stream, setting->bone_index_size);
-		stream->read((char*) &this->bone_weight, sizeof(float));
-		stream->read((char*) this->sdef_c, sizeof(float) * 3);
-		stream->read((char*) this->sdef_r0, sizeof(float) * 3);
-		stream->read((char*) this->sdef_r1, sizeof(float) * 3);
+		ReadChecked(stream, (char*) &this->bone_weight, sizeof(float));
+		ReadChecked(stream, (char*) this->sdef_c, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->sdef_r0, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->sdef_r1, sizeof(float) * 3);
 	}
 
 	void PmxVertexSkinningQDEF::Read(std::istream *stream, PmxSetting *setting)
@@ -161,22 +195,22 @@ namespace pmx
 		this->bone_index2 = ReadIndex(stream, setting->bone_index_size);
 		this->bone_index3 = ReadIndex(stream, setting->bone_index_size);
 		this->bone_index4 = ReadIndex(stream, setting->bone_index_size);
-		stream->read((char*) &this->bone_weight1, sizeof(float));
-		stream->read((char*) &this->bone_weight2, sizeof(float));
-		stream->read((char*) &this->bone_weight3, sizeof(float));
-		stream->read((char*) &this->bone_weight4, sizeof(float));
+		ReadChecked(stream, (char*) &this->bone_weight1, sizeof(float));
+		ReadChecked(stream, (char*) &this->bone_weight2, sizeof(float));
+		ReadChecked(stream, (char*) &this->bone_weight3, sizeof(float));
+		ReadChecked(stream, (char*) &this->bone_weight4, sizeof(float));
 	}
 
 	void PmxVertex::Read(std::istream *stream, PmxSetting *setting)
 	{
-		stream->read((char*) this->positon, sizeof(float) * 3);
-		stream->read((char*) this->normal, sizeof(float) * 3);
-		stream->read((char*) this->uv, sizeof(float) * 2);
+		ReadChecked(stream, (char*) this->positon, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->normal, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->uv, sizeof(float) * 2);
 		for (int i = 0; i < setting->uv; ++i)
 		{
-			stream->read((char*) this->uva[i], sizeof(float) * 4);
+			ReadChecked(stream, (char*) this->uva[i], sizeof(float) * 4);
 		}
-		stream->read((char*) &this->skinning_type, sizeof(PmxVertexSkinningType));
+		ReadChecked(stream, (char*) &this->skinning_type, sizeof(PmxVertexSkinningType));
 		switch (this->skinning_type)
 		{
 		case PmxVertexSkinningType::BDEF1:
@@ -195,46 +229,47 @@ namespace pmx
 			this->skinning = std::make_unique<PmxVertexSkinningQDEF>();
 			break;
 		default:
-			throw "invalid skinning type";
+			throw std::runtime_error("Invalid PMX skinning type");
 		}
 		this->skinning->Read(stream, setting);
-		stream->read((char*) &this->edge, sizeof(float));
+		ReadChecked(stream, (char*) &this->edge, sizeof(float));
 	}
 
 	void PmxMaterial::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->material_name = std::move(ReadString(stream, setting->encoding));
 		this->material_english_name = std::move(ReadString(stream, setting->encoding));
-		stream->read((char*) this->diffuse, sizeof(float) * 4);
-		stream->read((char*) this->specular, sizeof(float) * 3);
-		stream->read((char*) &this->specularlity, sizeof(float));
-		stream->read((char*) this->ambient, sizeof(float) * 3);
-		stream->read((char*) &this->flag, sizeof(uint8_t));
-		stream->read((char*) this->edge_color, sizeof(float) * 4);
-		stream->read((char*) &this->edge_size, sizeof(float));
+		ReadChecked(stream, (char*) this->diffuse, sizeof(float) * 4);
+		ReadChecked(stream, (char*) this->specular, sizeof(float) * 3);
+		ReadChecked(stream, (char*) &this->specularlity, sizeof(float));
+		ReadChecked(stream, (char*) this->ambient, sizeof(float) * 3);
+		ReadChecked(stream, (char*) &this->flag, sizeof(uint8_t));
+		ReadChecked(stream, (char*) this->edge_color, sizeof(float) * 4);
+		ReadChecked(stream, (char*) &this->edge_size, sizeof(float));
 		this->diffuse_texture_index = ReadIndex(stream, setting->texture_index_size);
 		this->sphere_texture_index = ReadIndex(stream, setting->texture_index_size);
-		stream->read((char*) &this->sphere_op_mode, sizeof(uint8_t));
-		stream->read((char*) &this->common_toon_flag, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &this->sphere_op_mode, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &this->common_toon_flag, sizeof(uint8_t));
 		if (this->common_toon_flag)
 		{
-			stream->read((char*) &this->toon_texture_index, sizeof(uint8_t));
+			ReadChecked(stream, (char*) &this->toon_texture_index, sizeof(uint8_t));
 		}
 		else {
 			this->toon_texture_index = ReadIndex(stream, setting->texture_index_size);
 		}
 		this->memo = std::move(ReadString(stream, setting->encoding));
-		stream->read((char*) &this->index_count, sizeof(int));
+		ReadChecked(stream, (char*)&this->index_count, sizeof(int));
+		if (this->index_count < 0) throw std::runtime_error("Negative material index count");
 	}
 
 	void PmxIkLink::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->link_target = ReadIndex(stream, setting->bone_index_size);
-		stream->read((char*) &this->angle_lock, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &this->angle_lock, sizeof(uint8_t));
 		if (angle_lock == 1)
 		{
-			stream->read((char*) this->max_radian, sizeof(float) * 3);
-			stream->read((char*) this->min_radian, sizeof(float) * 3);
+			ReadChecked(stream, (char*) this->max_radian, sizeof(float) * 3);
+			ReadChecked(stream, (char*) this->min_radian, sizeof(float) * 3);
 		}
 	}
 
@@ -242,35 +277,35 @@ namespace pmx
 	{
 		this->bone_name = std::move(ReadString(stream, setting->encoding));
 		this->bone_english_name = std::move(ReadString(stream, setting->encoding));
-		stream->read((char*) this->position, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->position, sizeof(float) * 3);
 		this->parent_index = ReadIndex(stream, setting->bone_index_size);
-		stream->read((char*) &this->level, sizeof(int));
-		stream->read((char*) &this->bone_flag, sizeof(uint16_t));
+		ReadChecked(stream, (char*) &this->level, sizeof(int));
+		ReadChecked(stream, (char*) &this->bone_flag, sizeof(uint16_t));
 		if (this->bone_flag & 0x0001) {
 			this->target_index = ReadIndex(stream, setting->bone_index_size);
 		}
 		else {
-			stream->read((char*)this->offset, sizeof(float) * 3);
+			ReadChecked(stream, (char*)this->offset, sizeof(float) * 3);
 		}
 		if (this->bone_flag & (0x0100 | 0x0200)) {
 			this->grant_parent_index = ReadIndex(stream, setting->bone_index_size);
-			stream->read((char*) &this->grant_weight, sizeof(float));
+			ReadChecked(stream, (char*) &this->grant_weight, sizeof(float));
 		}
 		if (this->bone_flag & 0x0400) {
-			stream->read((char*)this->lock_axis_orientation, sizeof(float) * 3);
+			ReadChecked(stream, (char*)this->lock_axis_orientation, sizeof(float) * 3);
 		}
 		if (this->bone_flag & 0x0800) {
-			stream->read((char*)this->local_axis_x_orientation, sizeof(float) * 3);
-			stream->read((char*)this->local_axis_y_orientation, sizeof(float) * 3);
+			ReadChecked(stream, (char*)this->local_axis_x_orientation, sizeof(float) * 3);
+			ReadChecked(stream, (char*)this->local_axis_y_orientation, sizeof(float) * 3);
 		}
 		if (this->bone_flag & 0x2000) {
-			stream->read((char*) &this->key, sizeof(int));
+			ReadChecked(stream, (char*) &this->key, sizeof(int));
 		}
 		if (this->bone_flag & 0x0020) {
 			this->ik_target_bone_index = ReadIndex(stream, setting->bone_index_size);
-			stream->read((char*) &ik_loop, sizeof(int));
-			stream->read((char*) &ik_loop_angle_limit, sizeof(float));
-			stream->read((char*) &ik_link_count, sizeof(int));
+			ReadChecked(stream, (char*) &ik_loop, sizeof(int));
+			ReadChecked(stream, (char*) &ik_loop_angle_limit, sizeof(float));
+			ReadCount(stream, ik_link_count);
 			this->ik_links = std::make_unique<PmxIkLink []>(ik_link_count);
 			for (int i = 0; i < ik_link_count; i++) {
 				ik_links[i].Read(stream, setting);
@@ -281,64 +316,64 @@ namespace pmx
 	void PmxMorphVertexOffset::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->vertex_index = ReadIndex(stream, setting->vertex_index_size);
-		stream->read((char*)this->position_offset, sizeof(float) * 3);
+		ReadChecked(stream, (char*)this->position_offset, sizeof(float) * 3);
 	}
 
 	void PmxMorphUVOffset::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->vertex_index = ReadIndex(stream, setting->vertex_index_size);
-		stream->read((char*)this->uv_offset, sizeof(float) * 4);
+		ReadChecked(stream, (char*)this->uv_offset, sizeof(float) * 4);
 	}
 
 	void PmxMorphBoneOffset::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->bone_index = ReadIndex(stream, setting->bone_index_size);
-		stream->read((char*)this->translation, sizeof(float) * 3);
-		stream->read((char*)this->rotation, sizeof(float) * 4);
+		ReadChecked(stream, (char*)this->translation, sizeof(float) * 3);
+		ReadChecked(stream, (char*)this->rotation, sizeof(float) * 4);
 	}
 
 	void PmxMorphMaterialOffset::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->material_index = ReadIndex(stream, setting->material_index_size);
-		stream->read((char*) &this->offset_operation, sizeof(uint8_t));
-		stream->read((char*)this->diffuse, sizeof(float) * 4);
-		stream->read((char*)this->specular, sizeof(float) * 3);
-		stream->read((char*) &this->specularity, sizeof(float));
-		stream->read((char*)this->ambient, sizeof(float) * 3);
-		stream->read((char*)this->edge_color, sizeof(float) * 4);
-		stream->read((char*) &this->edge_size, sizeof(float));
-		stream->read((char*)this->texture_argb, sizeof(float) * 4);
-		stream->read((char*)this->sphere_texture_argb, sizeof(float) * 4);
-		stream->read((char*)this->toon_texture_argb, sizeof(float) * 4);
+		ReadChecked(stream, (char*) &this->offset_operation, sizeof(uint8_t));
+		ReadChecked(stream, (char*)this->diffuse, sizeof(float) * 4);
+		ReadChecked(stream, (char*)this->specular, sizeof(float) * 3);
+		ReadChecked(stream, (char*) &this->specularity, sizeof(float));
+		ReadChecked(stream, (char*)this->ambient, sizeof(float) * 3);
+		ReadChecked(stream, (char*)this->edge_color, sizeof(float) * 4);
+		ReadChecked(stream, (char*) &this->edge_size, sizeof(float));
+		ReadChecked(stream, (char*)this->texture_argb, sizeof(float) * 4);
+		ReadChecked(stream, (char*)this->sphere_texture_argb, sizeof(float) * 4);
+		ReadChecked(stream, (char*)this->toon_texture_argb, sizeof(float) * 4);
 	}
 
 	void PmxMorphGroupOffset::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->morph_index = ReadIndex(stream, setting->morph_index_size);
-		stream->read((char*) &this->morph_weight, sizeof(float));
+		ReadChecked(stream, (char*) &this->morph_weight, sizeof(float));
 	}
 
 	void PmxMorphFlipOffset::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->morph_index = ReadIndex(stream, setting->morph_index_size);
-		stream->read((char*) &this->morph_value, sizeof(float));
+		ReadChecked(stream, (char*) &this->morph_value, sizeof(float));
 	}
 
 	void PmxMorphImpulseOffset::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->rigid_body_index = ReadIndex(stream, setting->rigidbody_index_size);
-		stream->read((char*) &this->is_local, sizeof(uint8_t));
-		stream->read((char*)this->velocity, sizeof(float) * 3);
-		stream->read((char*)this->angular_torque, sizeof(float) * 3);
+		ReadChecked(stream, (char*) &this->is_local, sizeof(uint8_t));
+		ReadChecked(stream, (char*)this->velocity, sizeof(float) * 3);
+		ReadChecked(stream, (char*)this->angular_torque, sizeof(float) * 3);
 	}
 
 	void PmxMorph::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->morph_name = ReadString(stream, setting->encoding);
 		this->morph_english_name = ReadString(stream, setting->encoding);
-		stream->read((char*) &category, sizeof(MorphCategory));
-		stream->read((char*) &morph_type, sizeof(MorphType));
-		stream->read((char*) &this->offset_count, sizeof(int));
+		ReadChecked(stream, (char*) &category, sizeof(MorphCategory));
+		ReadChecked(stream, (char*) &morph_type, sizeof(MorphType));
+		ReadCount(stream, this->offset_count);
 		switch (this->morph_type)
 		{
 		case MorphType::Group:
@@ -381,13 +416,13 @@ namespace pmx
 			}
 			break;
 		default:
-			throw;
+			throw std::runtime_error("Invalid or unsupported PMX data");
 		}
 	}
 
 	void PmxFrameElement::Read(std::istream *stream, PmxSetting *setting)
 	{
-		stream->read((char*) &this->element_target, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &this->element_target, sizeof(uint8_t));
 		if (this->element_target == 0x00)
 		{
 			this->index = ReadIndex(stream, setting->bone_index_size);
@@ -401,8 +436,8 @@ namespace pmx
 	{
 		this->frame_name = ReadString(stream, setting->encoding);
 		this->frame_english_name = ReadString(stream, setting->encoding);
-		stream->read((char*) &this->frame_flag, sizeof(uint8_t));
-		stream->read((char*) &this->element_count, sizeof(int));
+		ReadChecked(stream, (char*) &this->frame_flag, sizeof(uint8_t));
+		ReadCount(stream, this->element_count);
 		this->elements = std::make_unique<PmxFrameElement []>(this->element_count);
 		for (int i = 0; i < this->element_count; i++)
 		{
@@ -415,39 +450,39 @@ namespace pmx
 		this->rigid_body_name = ReadString(stream, setting->encoding);
 		this->rigid_body_english_name = ReadString(stream, setting->encoding);
 		this->target_bone = ReadIndex(stream, setting->bone_index_size);
-		stream->read((char*) &this->group, sizeof(uint8_t));
-		stream->read((char*) &this->mask, sizeof(uint16_t));
-		stream->read((char*) &this->shape, sizeof(uint8_t));
-		stream->read((char*) this->size, sizeof(float) * 3);
-		stream->read((char*) this->position, sizeof(float) * 3);
-		stream->read((char*) this->orientation, sizeof(float) * 3);
-		stream->read((char*) &this->mass, sizeof(float));
-		stream->read((char*) &this->move_attenuation, sizeof(float));
-		stream->read((char*) &this->rotation_attenuation, sizeof(float));
-		stream->read((char*) &this->repulsion, sizeof(float));
-		stream->read((char*) &this->friction, sizeof(float));
-		stream->read((char*) &this->physics_calc_type, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &this->group, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &this->mask, sizeof(uint16_t));
+		ReadChecked(stream, (char*) &this->shape, sizeof(uint8_t));
+		ReadChecked(stream, (char*) this->size, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->position, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->orientation, sizeof(float) * 3);
+		ReadChecked(stream, (char*) &this->mass, sizeof(float));
+		ReadChecked(stream, (char*) &this->move_attenuation, sizeof(float));
+		ReadChecked(stream, (char*) &this->rotation_attenuation, sizeof(float));
+		ReadChecked(stream, (char*) &this->repulsion, sizeof(float));
+		ReadChecked(stream, (char*) &this->friction, sizeof(float));
+		ReadChecked(stream, (char*) &this->physics_calc_type, sizeof(uint8_t));
 	}
 
 	void PmxJointParam::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->rigid_body1 = ReadIndex(stream, setting->rigidbody_index_size);
 		this->rigid_body2 = ReadIndex(stream, setting->rigidbody_index_size);
-		stream->read((char*) this->position, sizeof(float) * 3);
-		stream->read((char*) this->orientaiton, sizeof(float) * 3);
-		stream->read((char*) this->move_limitation_min, sizeof(float) * 3);
-		stream->read((char*) this->move_limitation_max, sizeof(float) * 3);
-		stream->read((char*) this->rotation_limitation_min, sizeof(float) * 3);
-		stream->read((char*) this->rotation_limitation_max, sizeof(float) * 3);
-		stream->read((char*) this->spring_move_coefficient, sizeof(float) * 3);
-		stream->read((char*) this->spring_rotation_coefficient, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->position, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->orientaiton, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->move_limitation_min, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->move_limitation_max, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->rotation_limitation_min, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->rotation_limitation_max, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->spring_move_coefficient, sizeof(float) * 3);
+		ReadChecked(stream, (char*) this->spring_rotation_coefficient, sizeof(float) * 3);
 	}
 
 	void PmxJoint::Read(std::istream *stream, PmxSetting *setting)
 	{
 		this->joint_name = ReadString(stream, setting->encoding);
 		this->joint_english_name = ReadString(stream, setting->encoding);
-		stream->read((char*) &this->joint_type, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &this->joint_type, sizeof(uint8_t));
 		this->param.Read(stream, setting);
 	}
 
@@ -455,14 +490,14 @@ namespace pmx
 	{
 		this->related_rigid_body = ReadIndex(stream, setting->rigidbody_index_size);
 		this->related_vertex = ReadIndex(stream, setting->vertex_index_size);
-		stream->read((char*) &this->is_near, sizeof(uint8_t));
+		ReadChecked(stream, (char*) &this->is_near, sizeof(uint8_t));
 	}
 
 	void PmxSoftBody::Read(std::istream *stream, PmxSetting *setting)
 	{
 		// 未実装
 		std::cerr << "Not Implemented Exception" << std::endl;
-		throw;
+		throw std::runtime_error("Invalid or unsupported PMX data");
 	}
 
 	void PmxModel::Init()
@@ -498,18 +533,18 @@ namespace pmx
 	{
 		// マジック
 		char magic[4];
-		stream->read((char*) magic, sizeof(char) * 4);
+		ReadChecked(stream, (char*) magic, sizeof(char) * 4);
 		if (magic[0] != 0x50 || magic[1] != 0x4d || magic[2] != 0x58 || magic[3] != 0x20)
 		{
 			std::cerr << "invalid magic number." << std::endl;
-			throw;
+			throw std::runtime_error("Invalid or unsupported PMX data");
 		}
 		// バージョン
-		stream->read((char*) &version, sizeof(float));
+		ReadChecked(stream, (char*) &version, sizeof(float));
 		if (version != 2.0f && version != 2.1f)
 		{
 			std::cerr << "this is not ver2.0 or ver2.1 but " << version << "." << std::endl;
-			throw;
+			throw std::runtime_error("Invalid or unsupported PMX data");
 		}
 		// ファイル設定
 		this->setting.Read(stream);
@@ -521,7 +556,7 @@ namespace pmx
 		this->model_english_comment = std::move(ReadString(stream, setting.encoding));
 
 		// 頂点
-		stream->read((char*) &vertex_count, sizeof(int));
+		ReadCount(stream, vertex_count, 37);
 		this->vertices = std::make_unique<PmxVertex []>(vertex_count);
 		for (int i = 0; i < vertex_count; i++)
 		{
@@ -529,7 +564,7 @@ namespace pmx
 		}
 
 		// 面
-		stream->read((char*) &index_count, sizeof(int));
+		ReadCount(stream, index_count, setting.vertex_index_size);
 		this->indices = std::make_unique<int []>(index_count);
 		for (int i = 0; i < index_count; i++)
 		{
@@ -537,7 +572,7 @@ namespace pmx
 		}
 
 		// テクスチャ
-		stream->read((char*) &texture_count, sizeof(int));
+		ReadCount(stream, texture_count, 4);
 		this->textures = std::make_unique<utfstring []>(texture_count);
 		for (int i = 0; i < texture_count; i++)
 		{
@@ -545,7 +580,7 @@ namespace pmx
 		}
 
 		// マテリアル
-		stream->read((char*) &material_count, sizeof(int));
+		ReadCount(stream, material_count, 80);
 		this->materials = std::make_unique<PmxMaterial []>(material_count);
 		for (int i = 0; i < material_count; i++)
 		{
@@ -553,7 +588,7 @@ namespace pmx
 		}
 
 		// ボーン
-		stream->read((char*) &this->bone_count, sizeof(int));
+		ReadCount(stream, this->bone_count, 27);
 		this->bones = std::make_unique<PmxBone []>(this->bone_count);
 		for (int i = 0; i < this->bone_count; i++)
 		{
@@ -561,7 +596,7 @@ namespace pmx
 		}
 
 		// モーフ
-		stream->read((char*) &this->morph_count, sizeof(int));
+		ReadCount(stream, this->morph_count, 14);
 		this->morphs = std::make_unique<PmxMorph []>(this->morph_count);
 		for (int i = 0; i < this->morph_count; i++)
 		{
@@ -569,7 +604,7 @@ namespace pmx
 		}
 
 		// 表示枠
-		stream->read((char*) &this->frame_count, sizeof(int));
+		ReadCount(stream, this->frame_count, 13);
 		this->frames = std::make_unique<PmxFrame []>(this->frame_count);
 		for (int i = 0; i < this->frame_count; i++)
 		{
@@ -577,7 +612,7 @@ namespace pmx
 		}
 
 		// 剛体
-		stream->read((char*) &this->rigid_body_count, sizeof(int));
+		ReadCount(stream, this->rigid_body_count, 80);
 		this->rigid_bodies = std::make_unique<PmxRigidBody []>(this->rigid_body_count);
 		for (int i = 0; i < this->rigid_body_count; i++)
 		{
@@ -585,7 +620,7 @@ namespace pmx
 		}
 
 		// ジョイント
-		stream->read((char*) &this->joint_count, sizeof(int));
+		ReadCount(stream, this->joint_count, 9);
 		this->joints = std::make_unique<PmxJoint []>(this->joint_count);
 		for (int i = 0; i < this->joint_count; i++)
 		{
@@ -595,7 +630,7 @@ namespace pmx
 		//// ソフトボディ
 		//if (this->version == 2.1f)
 		//{
-		//	stream->read((char*) &this->soft_body_count, sizeof(int));
+		//	ReadCount(stream, this->soft_body_count);
 		//	this->soft_bodies = std::make_unique<PmxSoftBody []>(this->soft_body_count);
 		//	for (int i = 0; i < this->soft_body_count; i++)
 		//	{
