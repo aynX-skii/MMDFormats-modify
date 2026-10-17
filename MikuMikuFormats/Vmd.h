@@ -6,9 +6,33 @@
 #include <iostream>
 #include <fstream>
 #include <ostream>
+#include <cstring>
+#include <charconv>
+#include <stdexcept>
+#include <cstdint>
 
 namespace vmd
 {
+  inline void ReadChecked(std::istream* stream, char* data, std::streamsize size) {
+    if (!stream || size < 0 || !stream->read(data, size)) throw std::runtime_error("Truncated VMD data");
+  }
+  inline void ReadCount(std::istream* stream, int& count, size_t recordBytes) {
+    ReadChecked(stream, reinterpret_cast<char*>(&count), sizeof(count));
+    std::streamoff available = -1;
+    const auto position = stream->tellg();
+    if (position != std::istream::pos_type(-1)) {
+      stream->seekg(0, std::ios::end);
+      const auto end = stream->tellg();
+      stream->clear(); stream->seekg(position);
+      if (end != std::istream::pos_type(-1)) available = end - position;
+    } else {
+      stream->clear(); available = stream->rdbuf()->in_avail();
+    }
+    if (count < 0 || count > 16000000 ||
+        (available >= 0 && uint64_t(count) * recordBytes > uint64_t(available)))
+      throw std::runtime_error("Invalid VMD element count");
+  }
+
 	/// ボーンフレーム
 	class VmdBoneFrame
 	{
@@ -27,14 +51,14 @@ namespace vmd
 		void Read(std::istream* stream)
 		{
 			char buffer[15];
-			stream->read(buffer, 15);
+			ReadChecked(stream, buffer, 15);
 			size_t len = 0;
 			while (len < 15 && buffer[len] != '\0') ++len;
 			name = std::string(buffer, len);
-			stream->read((char*) &frame, sizeof(int));
-			stream->read((char*) position, sizeof(float)*3);
-			stream->read((char*) orientation, sizeof(float)*4);
-			stream->read((char*) interpolation, sizeof(char) * 4 * 4 * 4);
+			ReadChecked(stream, (char*) &frame, sizeof(int));
+			ReadChecked(stream, (char*) position, sizeof(float)*3);
+			ReadChecked(stream, (char*) orientation, sizeof(float)*4);
+			ReadChecked(stream, (char*) interpolation, sizeof(char) * 4 * 4 * 4);
 		}
 
 		void Write(std::ostream* stream)
@@ -61,17 +85,17 @@ namespace vmd
 		/// 表情の重み
 		float weight;
 		/// フレーム番号
-		uint32_t frame;
+		int32_t frame;
 
 		void Read(std::istream* stream)
 		{
 			char buffer[15];
-			stream->read(buffer, 15);
+			ReadChecked(stream, buffer, 15);
 			size_t len = 0;
 			while (len < 15 && buffer[len] != '\0') ++len;
 			face_name = std::string(buffer, len);
-			stream->read((char*) &frame, sizeof(int));
-			stream->read((char*) &weight, sizeof(float));
+			ReadChecked(stream, (char*) &frame, sizeof(int));
+			ReadChecked(stream, (char*) &weight, sizeof(float));
 		}
 
 		void Write(std::ostream* stream)
@@ -108,13 +132,13 @@ namespace vmd
 
 		void Read(std::istream *stream)
 		{
-			stream->read((char*) &frame, sizeof(int));
-			stream->read((char*) &distance, sizeof(float));
-			stream->read((char*) position, sizeof(float) * 3);
-			stream->read((char*) orientation, sizeof(float) * 3);
-			stream->read((char*) interpolation, sizeof(char) * 24);
-			stream->read((char*) &angle, sizeof(int));
-			stream->read((char*) unknown, sizeof(char) * 1);
+			ReadChecked(stream, (char*) &frame, sizeof(int));
+			ReadChecked(stream, (char*) &distance, sizeof(float));
+			ReadChecked(stream, (char*) position, sizeof(float) * 3);
+			ReadChecked(stream, (char*) orientation, sizeof(float) * 3);
+			ReadChecked(stream, (char*) interpolation, sizeof(char) * 24);
+			ReadChecked(stream, (char*) &angle, sizeof(int));
+			ReadChecked(stream, (char*) unknown, sizeof(char) * 1);
 		}
 
 		void Write(std::ostream *stream)
@@ -142,9 +166,9 @@ namespace vmd
 
 		void Read(std::istream* stream)
 		{
-			stream->read((char*) &frame, sizeof(int));
-			stream->read((char*) color, sizeof(float) * 3);
-			stream->read((char*) position, sizeof(float) * 3);
+			ReadChecked(stream, (char*) &frame, sizeof(int));
+			ReadChecked(stream, (char*) color, sizeof(float) * 3);
+			ReadChecked(stream, (char*) position, sizeof(float) * 3);
 		}
 
 		void Write(std::ostream* stream)
@@ -174,18 +198,18 @@ namespace vmd
 		void Read(std::istream *stream)
 		{
 			char buffer[20];
-			stream->read((char*) &frame, sizeof(int));
-			stream->read((char*) &display, sizeof(uint8_t));
+			ReadChecked(stream, (char*) &frame, sizeof(int));
+			ReadChecked(stream, (char*) &display, sizeof(uint8_t));
 			int ik_count;
-			stream->read((char*) &ik_count, sizeof(int));
+			ReadCount(stream, ik_count, 21);
 			ik_enable.resize(ik_count);
 			for (int i = 0; i < ik_count; i++)
 			{
-				stream->read(buffer, 20);
+				ReadChecked(stream, buffer, 20);
 				size_t len = 0;
 				while (len < 20 && buffer[len] != '\0') ++len;
 				ik_enable[i].ik_name = std::string(buffer, len);
-				stream->read((char*) &ik_enable[i].enable, sizeof(uint8_t));
+				ReadChecked(stream, (char*) &ik_enable[i].enable, sizeof(uint8_t));
 			}
 		}
 
@@ -239,27 +263,30 @@ namespace vmd
 		static std::unique_ptr<VmdMotion> LoadFromStream(std::istream *stream)
 		{
 
-			char buffer[30];
+			char buffer[31] = {};
 			auto result = std::make_unique<VmdMotion>();
 
 			// magic and version
-			stream->read((char*) buffer, 30);
+			ReadChecked(stream, (char*) buffer, 30);
 			if (strncmp(buffer, "Vocaloid Motion Data", 20))
 			{
 				std::cerr << "invalid vmd file." << std::endl;
 				return nullptr;
 			}
-			result->version = std::atoi(buffer + 20);
+			const char* version = buffer + 20;
+			while (*version == ' ') ++version;
+			if (std::from_chars(version, buffer + 30, result->version).ec != std::errc{} || result->version != 2)
+				throw std::runtime_error("Unsupported VMD version");
 
 			// name
-			stream->read(buffer, 20);
+			ReadChecked(stream, buffer, 20);
 			size_t len = 0;
 			while (len < 20 && buffer[len] != '\0') ++len;
 			result->model_name = std::string(buffer, len);
 
 			// bone frames
 			int bone_frame_num;
-			stream->read((char*) &bone_frame_num, sizeof(int));
+			ReadCount(stream, bone_frame_num, 111);
 			result->bone_frames.resize(bone_frame_num);
 			for (int i = 0; i < bone_frame_num; i++)
 			{
@@ -268,7 +295,7 @@ namespace vmd
 
 			// face frames
 			int face_frame_num;
-			stream->read((char*) &face_frame_num, sizeof(int));
+			ReadCount(stream, face_frame_num, 23);
 			result->face_frames.resize(face_frame_num);
 			for (int i = 0; i < face_frame_num; i++)
 			{
@@ -277,7 +304,7 @@ namespace vmd
 
 			// camera frames
 			int camera_frame_num;
-			stream->read((char*) &camera_frame_num, sizeof(int));
+			ReadCount(stream, camera_frame_num, 61);
 			result->camera_frames.resize(camera_frame_num);
 			for (int i = 0; i < camera_frame_num; i++)
 			{
@@ -286,21 +313,24 @@ namespace vmd
 
 			// light frames
 			int light_frame_num;
-			stream->read((char*) &light_frame_num, sizeof(int));
+			ReadCount(stream, light_frame_num, 28);
 			result->light_frames.resize(light_frame_num);
 			for (int i = 0; i < light_frame_num; i++)
 			{
 				result->light_frames[i].Read(stream);
 			}
 
-			// unknown2
-			stream->read(buffer, 4);
+			// Optional self-shadow and IK sections. Older motions may end here.
+      if (stream->peek() == std::char_traits<char>::eof()) return result;
+      int shadowCount = 0;
+      ReadCount(stream, shadowCount, 9);
+      for (int i=0;i<shadowCount;++i) ReadChecked(stream, buffer, 9);
 
 			// ik frames
 			if (stream->peek() != std::ios::traits_type::eof())
 			{
 				int ik_num;
-				stream->read((char*) &ik_num, sizeof(int));
+				ReadCount(stream, ik_num, 9);
 				result->ik_frames.resize(ik_num);
 				for (int i = 0; i < ik_num; i++)
 				{
